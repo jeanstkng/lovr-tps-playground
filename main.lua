@@ -11,18 +11,41 @@ local player = {
     position = vector(0, 0, 0),
 
     speed = 10,
-    jumpSpeed = 7,
+    jumpSpeed = 11,
+
+    -- How quickly horizontal velocity ramps toward its target, in units/s^2.
+    -- Higher = snappier turns, lower = more slide/inertia.
+    groundAcceleration = 60,
+    airAcceleration = 20, -- lower air control avoids fighting wall contacts
 
     moveX = 0,
     moveZ = 0,
 
-    radius = .25,
-    height = 1.2,
+    minSpeedForFacing = .1, -- below this, keep last facing instead of jittering
+
+    radius = .5,
+    height = 2,
 
     grounded = false,
 
+    -- Gravity feel: falling uses a stronger pull than rising, for a
+    -- snappier arc (standard platformer trick). 1.0 = world default.
+    fallGravityScale = 1.6,
+    riseGravityScale = 1.0,
+
+    maxFallSpeed = 25, -- terminal velocity, in units/s
+
     transform = lovr.math.newMat4(),
-    collider = nil
+    collider = nil,
+
+    anim = {
+        current = 1, -- idle
+        next = nil,
+        time = 0,
+        nextTime = 0,
+        blend = 0,
+        duration = .2
+    }
 }
 
 local camera = {
@@ -33,6 +56,8 @@ local camera = {
 
     distance = 10,
     height = 4,
+
+    minHeight = .3, -- floor is at y=0; keep the camera at least this far above it
 
     sensitivity = .004
 }
@@ -105,6 +130,49 @@ local function addBox(x, y, z, width, height, depth, angle)
 end
 
 --------------------------------------------------
+-- ANIMATION
+--------------------------------------------------
+
+-- Crossfades to a new animation instead of snapping to it. Safe to call
+-- every frame; it's a no-op once already playing (or transitioning to)
+-- the requested animation.
+local function playAnimation(index, crossfadeTime)
+    local anim = player.anim
+
+    if index == anim.current or index == anim.next then return end
+
+    anim.next = index
+    anim.nextTime = 0
+    anim.blend = 0
+    anim.duration = crossfadeTime or .2
+end
+
+-- Advances animation playback and applies the blended pose to the model.
+-- Called once per frame from lovr.update (NOT lovr.draw, which runs once
+-- per eye in VR and would double-apply / desync the animation clock).
+local function updateAnimation(dt)
+    local anim = player.anim
+
+    anim.time = anim.time + dt
+
+    if anim.next then
+        anim.nextTime = anim.nextTime + dt
+        anim.blend = math.min(anim.blend + dt / anim.duration, 1)
+
+        model:animate(anim.current, anim.time, 1 - anim.blend)
+        model:animate(anim.next, anim.nextTime, anim.blend)
+
+        if anim.blend >= 1 then
+            anim.current = anim.next
+            anim.time = anim.nextTime
+            anim.next = nil
+        end
+    else
+        model:animate(anim.current, anim.time)
+    end
+end
+
+--------------------------------------------------
 -- GROUNDED CHECK
 --------------------------------------------------
 
@@ -126,10 +194,10 @@ end
 
 local function drawDebugAxes(pass)
     local x = player.position.x
-    local y = player.position.y + 1.2
+    local y = player.position.y + 2
     local z = player.position.z
 
-    local length = 1.5
+    local length = 2
 
     --------------------------------------------------
     -- MOVEMENT
@@ -145,7 +213,7 @@ local function drawDebugAxes(pass)
     --------------------------------------------------
 
     local cameraForwardX = -math.sin(camera.yaw)
-    local cameraForwardZ = -math.cos(camera.yaw)
+    local cameraForwardZ = -math.cos(camera.pitch)
 
     pass:setColor(0, 1, 0)
 
@@ -177,6 +245,11 @@ function lovr.load()
     --------------------------------------------------
 
     world = lovr.physics.newWorld({tags = {'player'}})
+
+    -- Default gravity (~9.81) reads as floaty at this scale/speed; roughly
+    -- 2.5x that feels a lot more grounded. jumpSpeed above was bumped up
+    -- to compensate, so jump height stays about the same.
+    world:setGravity(0, -24, 0)
 
     --------------------------------------------------
     -- PLAYER COLLIDER
@@ -230,7 +303,7 @@ function lovr.load()
     addBox(-2, 1.25, 5, 1.5, 2.5, 1.5)
 
     -- Raised platform
-    addBox(5, 2.5, 8, 5, .5, 5)
+    addBox(5, 1.625, 8.25, 5, .5, 5)
 
     -- Ramp
     addBox(5, .85, 3.5, 3, .4, 5, math.rad(-20))
@@ -290,7 +363,7 @@ function lovr.update(dt)
     if lovr.system.isKeyDown('d', 'right') then inputX = inputX + 1 end
 
     --------------------------------------------------
-    -- CAMERA-RELATIVE MOVEMENT
+    -- CAMERA-RELATIVE DESIRED DIRECTION
     --------------------------------------------------
 
     local forwardX = -math.sin(camera.yaw)
@@ -299,30 +372,72 @@ function lovr.update(dt)
     local rightX = -forwardZ
     local rightZ = forwardX
 
-    local dx = forwardX * inputZ + rightX * inputX
+    local desiredX = forwardX * inputZ + rightX * inputX
+    local desiredZ = forwardZ * inputZ + rightZ * inputX
 
-    local dz = forwardZ * inputZ + rightZ * inputX
+    local desiredLength = math.sqrt(desiredX * desiredX + desiredZ * desiredZ)
 
-    local length = math.sqrt(dx * dx + dz * dz)
-
-    if length > 0 then
-        dx = dx / length
-        dz = dz / length
-
-        player.moveX = dx
-        player.moveZ = dz
-    else
-        dx = 0
-        dz = 0
+    if desiredLength > 0 then
+        desiredX = desiredX / desiredLength
+        desiredZ = desiredZ / desiredLength
     end
 
     --------------------------------------------------
-    -- MOVEMENT
+    -- SMOOTHED (ACCELERATION-LIMITED) MOVEMENT
     --------------------------------------------------
+
+    -- Instead of snapping straight to the target speed, ramp the horizontal
+    -- velocity toward it. This smooths direction changes, and — crucially —
+    -- it starts from whatever velocity the physics solver actually produced
+    -- last step, rather than blindly overwriting it. That's what let the
+    -- player get pinned against walls in the air: a hard setLinearVelocity()
+    -- every frame fights any push-back the solver applies on contact.
 
     local vx, vy, vz = player.collider:getLinearVelocity()
 
-    player.collider:setLinearVelocity(dx * player.speed, vy, dz * player.speed)
+    local targetVX = desiredX * player.speed
+    local targetVZ = desiredZ * player.speed
+
+    local acceleration = player.grounded and player.groundAcceleration or
+                             player.airAcceleration
+
+    local dvx = targetVX - vx
+    local dvz = targetVZ - vz
+
+    local dv = math.sqrt(dvx * dvx + dvz * dvz)
+    local maxDelta = acceleration * dt
+
+    if dv > maxDelta and dv > 1e-6 then
+        local scale = maxDelta / dv
+
+        dvx = dvx * scale
+        dvz = dvz * scale
+    end
+
+    local newVX = vx + dvx
+    local newVZ = vz + dvz
+
+    player.collider:setLinearVelocity(newVX, vy, newVZ)
+
+    --------------------------------------------------
+    -- FACING DIRECTION
+    --------------------------------------------------
+
+    -- Derive facing from the resulting velocity rather than raw input, so
+    -- the character (and debug arrow) turns smoothly and matches what's
+    -- actually happening physically (e.g. sliding along a wall).
+
+    local speedSq = newVX * newVX + newVZ * newVZ
+
+    if speedSq > player.minSpeedForFacing * player.minSpeedForFacing then
+        local speed = math.sqrt(speedSq)
+
+        player.moveX = newVX / speed
+        player.moveZ = newVZ / speed
+    else
+        player.moveX = 0
+        player.moveZ = 0
+    end
 
     --------------------------------------------------
     -- PHYSICS STEP
@@ -350,6 +465,39 @@ function lovr.update(dt)
     checkGrounded()
 
     --------------------------------------------------
+    -- GRAVITY FEEL
+    --------------------------------------------------
+
+    do
+        local gvx, gvy, gvz = player.collider:getLinearVelocity()
+
+        -- Fall faster than you rise, for a snappier arc.
+        if gvy < 0 then
+            player.collider:setGravityScale(player.fallGravityScale)
+        else
+            player.collider:setGravityScale(player.riseGravityScale)
+        end
+
+        -- Terminal velocity clamp, so a long fall can't build up enough
+        -- speed to tunnel through thin geometry in one physics step.
+        if gvy < -player.maxFallSpeed then
+            player.collider:setLinearVelocity(gvx, -player.maxFallSpeed, gvz)
+        end
+    end
+
+    --------------------------------------------------
+    -- ANIMATION
+    --------------------------------------------------
+
+    if player.moveX ~= 0 or player.moveZ ~= 0 then
+        playAnimation(3, .2) -- walk
+    else
+        playAnimation(1, .3) -- idle
+    end
+
+    updateAnimation(dt)
+
+    --------------------------------------------------
     -- THIRD-PERSON CAMERA
     --------------------------------------------------
 
@@ -362,6 +510,12 @@ function lovr.update(dt)
     local cameraX = targetX + math.sin(camera.yaw) * cosPitch * camera.distance
 
     local cameraY = targetY + math.sin(camera.pitch) * camera.distance
+
+    -- Keep the camera from dipping below the floor. The pitch clamp alone
+    -- (see lovr.mousemoved) constrains angle, not world-space height, so at
+    -- large distances/low pitches the orbit math can still put the camera
+    -- underground — clamp the resulting height directly against the floor.
+    cameraY = math.max(cameraY, camera.minHeight)
 
     local cameraZ = targetZ + math.cos(camera.yaw) * cosPitch * camera.distance
 
