@@ -7,6 +7,10 @@ local world
 local groundCollider
 local playground = {}
 
+local particles = {}
+local spawnTimer = 0
+local spawnRate = 1 / 2.5 -- 2.5 particles per second
+
 local player = {
     position = vector(0, 0, 0),
 
@@ -103,6 +107,20 @@ local function drawPlaygroundDebug(pass)
     end
 
     pass:setColor(1, 1, 1)
+end
+
+local function spawnParticle(x, y, z)
+    table.insert(particles, {
+        position = lovr.math.newVec3(x, y, z),
+        velocity = lovr.math
+            .newVec3((math.random() - 0.5) * 2, -- x direction/speed
+        math.random() * 3, -- y direction/speed (upward)
+        (math.random() - 0.5) * 2 -- z direction/speed
+        ),
+        life = 1.0, -- seconds remaining
+        maxLife = 1.0,
+        color = {0.8, 0.8, 0.8}
+    })
 end
 
 --------------------------------------------------
@@ -489,7 +507,9 @@ function lovr.update(dt)
     -- ANIMATION
     --------------------------------------------------
 
-    if player.moveX ~= 0 or player.moveZ ~= 0 then
+    local isMoving = player.moveX ~= 0 or player.moveZ ~= 0
+
+    if isMoving then
         playAnimation(3, .2) -- walk
     else
         playAnimation(1, .3) -- idle
@@ -522,6 +542,22 @@ function lovr.update(dt)
     camera.transform:lookAt(cameraX, cameraY, cameraZ, targetX, targetY, targetZ)
 
     camera.transform:invert()
+
+    spawnTimer = spawnTimer + dt
+    if spawnTimer >= spawnRate then
+        spawnTimer = spawnTimer - spawnRate
+        if isMoving then spawnParticle(player.position.x, 0, player.position.z) end
+    end
+
+    for i = #particles, 1, -1 do
+        local p = particles[i]
+        p.life = p.life - dt
+        if p.life <= 0 then
+            table.remove(particles, i)
+        else
+            p.position = p.position + p.velocity * dt
+        end
+    end
 end
 
 --------------------------------------------------
@@ -608,6 +644,12 @@ function lovr.draw(pass)
         pass:box(x, y, z, object.width, object.height, object.depth, angle, ax,
                  ay, az)
 
+    end
+
+    for _, p in ipairs(particles) do
+        local alpha = p.life / p.maxLife
+        pass:setColor(p.color[1], p.color[2], p.color[3], alpha)
+        pass:sphere(p.position, 0.25)
     end
 
     drawPlaygroundDebug(pass)
