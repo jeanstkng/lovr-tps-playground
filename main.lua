@@ -9,7 +9,17 @@ local playground = {}
 
 local particles = {}
 local spawnTimer = 0
-local spawnRate = 1 / 2.5 -- 2.5 particles per second
+local spawnRate = 0.15 / 1 -- 2.5 particles per second
+
+local pastelColors = {
+    { 1.00, 0.71, 0.76 }, -- pink
+    { 1.00, 0.85, 0.65 }, -- peach
+    { 1.00, 0.96, 0.68 }, -- yellow
+    { 0.72, 0.91, 0.74 }, -- mint
+    { 0.68, 0.85, 1.00 }, -- baby blue
+    { 0.78, 0.72, 0.95 }, -- lavender
+    { 0.91, 0.72, 0.88 }  -- lilac pink
+}
 
 local player = {
     position = vector(0, 0, 0),
@@ -127,7 +137,7 @@ end
 -- PLAYGROUND
 --------------------------------------------------
 
-local function addBox(x, y, z, width, height, depth, angle)
+local function addBox(x, y, z, width, height, depth, angle, color)
     angle = angle or 0
 
     local collider = world:newBoxCollider(x, y, z, width, height, depth)
@@ -138,7 +148,7 @@ local function addBox(x, y, z, width, height, depth, angle)
 
     table.insert(playground, {
         collider = collider,
-
+        color = color,
         width = width,
         height = height,
         depth = depth
@@ -303,28 +313,28 @@ function lovr.load()
     --------------------------------------------------
 
     -- Small step
-    addBox(3, .25, -3, 2, .5, 2)
+    addBox(3, .25, -3, 2, .5, 2, nil, pastelColors[1])
 
     -- Medium step
-    addBox(5, .5, -3, 2, 1, 2)
+    addBox(5, .5, -3, 2, 1, 2, nil, pastelColors[2])
 
     -- Large block
-    addBox(8, 1, -3, 4, 2, 4)
+    addBox(8, 1, -3, 4, 2, 4, nil, pastelColors[3])
 
     -- Wall
-    addBox(-5, 1.5, -5, 8, 3, .5)
+    addBox(-5, 1.5, -5, 8, 3, .5, nil, pastelColors[4])
 
     -- Tall pillar
-    addBox(-5, 2, 3, 1, 4, 1)
+    addBox(-5, 2, 3, 1, 4, 1, nil, pastelColors[5])
 
     -- Short pillar
-    addBox(-2, 1.25, 5, 1.5, 2.5, 1.5)
+    addBox(-2, 1.25, 5, 1.5, 2.5, 1.5, nil, pastelColors[6])
 
     -- Raised platform
-    addBox(5, 1.625, 8.25, 5, .5, 5)
+    addBox(5, 1.625, 8.25, 5, .5, 5, nil, pastelColors[7])
 
     -- Ramp
-    addBox(5, .85, 3.5, 3, .4, 5, math.rad(-20))
+    addBox(5, .85, 3.5, 3, .4, 5, math.rad(-20), pastelColors[7])
 
     --------------------------------------------------
     -- SHADER
@@ -546,7 +556,7 @@ function lovr.update(dt)
     spawnTimer = spawnTimer + dt
     if spawnTimer >= spawnRate then
         spawnTimer = spawnTimer - spawnRate
-        if isMoving then spawnParticle(player.position.x, 0, player.position.z) end
+        if isMoving and player.grounded then spawnParticle(player.position.x, player.position.y, player.position.z) end
     end
 
     for i = #particles, 1, -1 do
@@ -601,25 +611,25 @@ function lovr.draw(pass)
     -- DEBUG AXES
     --------------------------------------------------
 
-    drawDebugAxes(pass)
+    -- drawDebugAxes(pass)
 
     --------------------------------------------------
     -- DEBUG PLAYER CAPSULE
     --------------------------------------------------
 
-    local cx, cy, cz = player.collider:getPosition()
+    -- local cx, cy, cz = player.collider:getPosition()
 
-    if player.grounded then
-        -- Cyan = grounded
-        pass:setColor(0, 1, 1, .35)
-    else
-        -- Magenta = airborne
-        pass:setColor(1, 0, 1, .35)
-    end
+    -- if player.grounded then
+    --     -- Cyan = grounded
+    --     pass:setColor(0, 1, 1, .35)
+    -- else
+    --     -- Magenta = airborne
+    --     pass:setColor(1, 0, 1, .35)
+    -- end
 
-    pass:capsule(cx, cy, cz, player.radius, player.height - player.radius * 2,
+    -- pass:capsule(cx, cy, cz, player.radius, player.height - player.radius * 2,
 
-                 math.pi / 2, 1, 0, 0)
+    --              math.pi / 2, 1, 0, 0)
 
     --------------------------------------------------
     -- FLOOR
@@ -633,13 +643,13 @@ function lovr.draw(pass)
     -- PLAYGROUND
     --------------------------------------------------
 
-    pass:setColor(.45, .45, .5)
-
     for _, object in ipairs(playground) do
 
         local x, y, z = object.collider:getPosition()
 
         local angle, ax, ay, az = object.collider:getOrientation()
+
+        pass:setColor(object.color)
 
         pass:box(x, y, z, object.width, object.height, object.depth, angle, ax,
                  ay, az)
@@ -652,7 +662,7 @@ function lovr.draw(pass)
         pass:sphere(p.position, 0.25)
     end
 
-    drawPlaygroundDebug(pass)
+    -- drawPlaygroundDebug(pass)
 
     pass:setColor(1, 1, 1)
 end

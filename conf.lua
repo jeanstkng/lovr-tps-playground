@@ -5,8 +5,8 @@ function lovr.conf(t)
     t.modules.headset = false
 
     t.window.title = 'Playground'
-    t.window.width = 1280
-    t.window.height = 720
+    t.window.width = 1920
+    t.window.height = 1080
     t.window.vsync = 1
     t.window.resizable = true
 end
